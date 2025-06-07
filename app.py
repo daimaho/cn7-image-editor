@@ -14,6 +14,10 @@ BASE_IMAGE_PATH = 'plantilla_base.jpg'
 # Si no usas esta fuente, el script intentará cargar una por defecto.
 FONT_PATH = "Roboto-Bold.ttf"
 
+# Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
+# Ajusta este valor para controlar la separación entre líneas.
+LINE_SPACING_FACTOR = 0.2
+
 @app.route('/generate-image', methods=['POST'])
 def generate_image():
     """
@@ -158,7 +162,7 @@ def generate_image():
             except AttributeError: # Fallback for older Pillow versions
                 line_height_estimate = temp_font.getsize("Tg")[1]
 
-            total_text_height = len(test_lines) * line_height_estimate
+            total_text_height = (len(test_lines) * line_height_estimate) + (max(0, len(test_lines) - 1) * int(line_height_estimate * LINE_SPACING_FACTOR))
             
             # Verificar si el texto cabe dentro del área y el número de líneas es aceptable
             if total_text_height <= text_area_height and len(test_lines) <= max_lines:
@@ -181,12 +185,14 @@ def generate_image():
         y_offset = text_area_y # Punto de inicio para la primera línea
 
         try: # Use getbbox for Pillow 9.0+
-            line_height = font.getbbox("Tg")[3] - font.getbbox("Tg")[1]
+            base_line_height = font.getbbox("Tg")[3] - font.getbbox("Tg")[1]
         except AttributeError: # Fallback for older Pillow versions
-            line_height = font.getsize("Tg")[1]
+            base_line_height = font.getsize("Tg")[1]
+
+        extra_spacing_per_line = int(base_line_height * LINE_SPACING_FACTOR)
 
         # Centrar el bloque completo de texto verticalmente si hay espacio
-        total_text_block_height = len(lines) * line_height
+        total_text_block_height = (len(lines) * base_line_height) + (max(0, len(lines) - 1) * extra_spacing_per_line)
         if total_text_block_height < text_area_height:
             y_offset += (text_area_height - total_text_block_height) / 2
 
@@ -197,7 +203,7 @@ def generate_image():
             x_final = text_area_x + (text_area_width - line_width) / 2
             
             draw.text((x_final, y_offset), line, font=font, fill=text_color)
-            y_offset += line_height # Mover a la siguiente línea
+            y_offset += base_line_height + extra_spacing_per_line # Mover a la siguiente línea
 
         # --- SALIDA DE LA IMAGEN ---
         img_byte_arr = io.BytesIO()
