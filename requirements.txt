@@ -4,4 +4,4 @@ requests
 gunicorn
 PyDrive2
 oauth2client # Añadido para la autenticación de Google Drive
-Cloudinary
+cloudinary
