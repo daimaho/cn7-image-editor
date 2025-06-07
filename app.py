@@ -48,33 +48,15 @@ def generate_image():
         target_position_x_img = 0
         target_position_y_img = 0
 
-        # Implementación del modo "Cover"
-        # 1. Calcular la relación de aspecto de la imagen destacada y del área objetivo
-        img_aspect = featured_image.width / featured_image.height
-        target_aspect = target_width_img / target_height_img
+        # Implementación del modo "Cover" mejorado
+        # Se redimensiona y recorta la imagen para que encaje perfectamente en el área.
+        # Esto previene que la imagen se "agrande" más de lo necesario o se distorsione.
+        cropped_featured_image = ImageOps.fit(featured_image, 
+                                              (target_width_img, target_height_img), 
+                                              method=Image.Resampling.LANCZOS, 
+                                              bleed=0.0, 
+                                              centering=(0.5, 0.5)) # Centrar el recorte
 
-        if img_aspect > target_aspect:
-            # La imagen es más ancha que el objetivo, escalar por altura y recortar ancho
-            new_height = target_height_img
-            new_width = int(new_height * img_aspect)
-            resized_featured_image = featured_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            # Calcular recorte para centrar horizontalmente
-            left = (new_width - target_width_img) / 2
-            top = 0
-            right = left + target_width_img
-            bottom = target_height_img
-            cropped_featured_image = resized_featured_image.crop((left, top, right, bottom))
-        else:
-            # La imagen es más alta que el objetivo, escalar por ancho y recortar altura
-            new_width = target_width_img
-            new_height = int(new_width / img_aspect)
-            resized_featured_image = featured_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            # Calcular recorte para centrar verticalmente
-            left = 0
-            top = (new_height - target_height_img) / 2
-            right = target_width_img
-            bottom = top + target_height_img
-            cropped_featured_image = resized_featured_image.crop((left, top, right, bottom))
 
         # Pegar la imagen recortada en la posición definida
         base_image.paste(cropped_featured_image, 
@@ -92,7 +74,7 @@ def generate_image():
 
         try:
             if os.path.exists(FONT_PATH):
-                font_size = 80 # Tamaño inicial de la fuente, se ajustará
+                font_size = 80 # Tamaño inicial de la fuente
                 font = ImageFont.truetype(FONT_PATH, size=font_size)
             else:
                 print(f"Advertencia: Fuente '{FONT_PATH}' no encontrada. Usando fuente por defecto.")
@@ -101,41 +83,73 @@ def generate_image():
             print("Advertencia: No se pudo cargar la fuente. Usando fuente por defecto.")
             font = ImageFont.load_default()
 
-        # Ajuste de tamaño de fuente para que el texto quepa en el área
-        while True:
-            # Calcula el tamaño del texto con el tamaño de fuente actual
-            bbox = draw.textbbox((0,0), title_text, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
+        # --- Lógica para texto multi-línea y ajuste de fuente ---
+        lines = []
+        current_line = []
+        words = title_text.split() # Divide el título en palabras
 
-            # Si el texto cabe en el área, salimos del bucle
-            if text_width <= text_area_width and text_height <= text_area_height:
+        # Ajuste inicial de la fuente para que el texto sea legible
+        # Comenzamos con un tamaño de fuente que es un buen compromiso
+        # y reducimos si el texto completo no cabe en el área.
+        optimal_font_size = 80 
+        temp_font = ImageFont.truetype(FONT_PATH, size=optimal_font_size) if os.path.exists(FONT_PATH) else ImageFont.load_default()
+
+        # Primero, ajustamos el tamaño de la fuente para que el texto quepa en el ancho de la caja
+        # Si el texto es muy largo, lo dividimos en líneas
+        max_lines = 4 # Límite máximo de líneas
+        
+        while True:
+            test_lines = []
+            test_current_line = []
+            
+            for word in words:
+                test_potential_line = " ".join(test_current_line + [word])
+                bbox = draw.textbbox((0,0), test_potential_line, font=temp_font)
+                test_width = bbox[2] - bbox[0]
+                
+                if test_width <= text_area_width:
+                    test_current_line.append(word)
+                else:
+                    test_lines.append(" ".join(test_current_line))
+                    test_current_line = [word]
+            
+            if test_current_line:
+                test_lines.append(" ".join(test_current_line))
+            
+            total_text_height = len(test_lines) * temp_font.getbbox("Tg")[3] # Aproximación de la altura total
+            
+            if total_text_height <= text_area_height and len(test_lines) <= max_lines:
+                lines = test_lines # Si cabe, esta es la solución
+                font = temp_font # Y esta es la fuente
                 break
             
-            # Si no cabe, reduce el tamaño de la fuente
-            font_size -= 1
-            if font_size <= 10: # Límite inferior para evitar bucles infinitos
+            # Si no cabe, reducimos el tamaño de la fuente y reintentamos
+            optimal_font_size -= 1
+            if optimal_font_size <= 10: # Límite inferior para evitar bucles infinitos
                 print("Advertencia: El texto no cabe en el área con un tamaño de fuente razonable.")
-                break # Salir si la fuente es demasiado pequeña
+                lines = test_lines # Usar lo que se pudo generar
+                font = temp_font
+                break
             
-            if os.path.exists(FONT_PATH):
-                font = ImageFont.truetype(FONT_PATH, size=font_size)
-            else:
-                font = ImageFont.load_default() # Usar por defecto si la fuente no está disponible
+            temp_font = ImageFont.truetype(FONT_PATH, size=optimal_font_size) if os.path.exists(FONT_PATH) else ImageFont.load_default()
 
+        # Dibujar las líneas de texto
+        y_offset = text_area_y # Punto de inicio para la primera línea
+        line_height = font.getbbox("Tg")[3] # Altura aproximada de una línea de texto
 
-        # Calcular la posición para centrar el texto dentro de su área (951x331)
-        text_bbox = draw.textbbox((0,0), title_text, font=font)
-        text_width_final = text_bbox[2] - text_bbox[0]
-        text_height_final = text_bbox[3] - text_bbox[1]
+        # Centrar el bloque completo de texto verticalmente si hay espacio
+        total_text_block_height = len(lines) * line_height
+        if total_text_block_height < text_area_height:
+            y_offset += (text_area_height - total_text_block_height) / 2
 
-        # Posición final para el texto dentro del área definida por text_area_x, text_area_y
-        # Centrado horizontalmente dentro del área
-        text_x_final = text_area_x + (text_area_width - text_width_final) / 2
-        # Centrado verticalmente dentro del área
-        text_y_final = text_area_y + (text_area_height - text_height_final) / 2
-
-        draw.text((text_x_final, text_y_final), title_text, font=font, fill=text_color)
+        for line in lines:
+            # Centrar cada línea horizontalmente dentro del área
+            bbox = draw.textbbox((0,0), line, font=font)
+            line_width = bbox[2] - bbox[0]
+            x_final = text_area_x + (text_area_width - line_width) / 2
+            
+            draw.text((x_final, y_offset), line, font=font, fill=text_color)
+            y_offset += line_height # Mover a la siguiente línea
 
         # --- SALIDA DE LA IMAGEN ---
         img_byte_arr = io.BytesIO()
@@ -145,8 +159,12 @@ def generate_image():
         return send_file(img_byte_arr, mimetype='image/png')
 
     except Exception as e:
+        # Captura cualquier error durante el proceso y devuelve una respuesta de error 500
         print(f"Error al generar la imagen: {e}")
         return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
 
 if __name__ == '__main__':
+    # Cuando se ejecuta localmente o en un entorno como Railway, se usa el puerto
+    # definido por la variable de entorno 'PORT', o el puerto 8000 por defecto.
+    # El host '0.0.0.0' hace que la aplicación sea accesible desde cualquier IP.
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))
