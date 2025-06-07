@@ -7,6 +7,8 @@ import os
 import json
 import base64
 from pydrive2.auth import GoogleAuth
+# Importar ServiceAccountCredentials directamente si se usa el método from_json_keyfile_dict
+from oauth2client.service_account import ServiceAccountCredentials 
 from pydrive2.drive import GoogleDrive
 
 app = Flask(__name__)
@@ -15,7 +17,6 @@ app = Flask(__name__)
 BASE_IMAGE_PATH = 'plantilla_base.jpg'
 
 # Define la ruta a tu fuente. Asegúrate de que este archivo .ttf esté en la misma carpeta.
-# Si no usas esta fuente, el script intentará cargar una por defecto.
 FONT_PATH = "Roboto-Bold.ttf"
 
 # Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
@@ -38,10 +39,18 @@ try:
     credentials_json_bytes = base64.b64decode(credentials_json_base64)
     credentials_info = json.loads(credentials_json_bytes.decode('utf-8'))
 
-    # Configurar PyDrive para usar la cuenta de servicio
+    # --- CAMBIO AQUÍ: Inicialización de GoogleAuth y Credenciales ---
+    # Define los ámbitos (scopes) de acceso que necesitas para Google Drive
+    # 'file' para acceso completo a archivos creados por la app, o 'drive' para acceso a todo el Drive.
+    # 'https://www.googleapis.com/auth/drive' es el scope completo de Drive.
+    # 'https://www.googleapis.com/auth/drive.file' para acceso a archivos creados o abiertos por la app.
+    # Si vas a subir a una carpeta específica, 'drive.file' suele ser suficiente.
+    scopes = ['https://www.googleapis.com/auth/drive.file'] # O 'https://www.googleapis.com/auth/drive'
+
+    # Crea las credenciales de la cuenta de servicio directamente desde el diccionario
     gauth = GoogleAuth()
-    gauth.credentials = gauth.attr_from_dict(gauth.credentials, credentials_info)
-    gauth.ServiceAuth() # Autenticar con la cuenta de servicio
+    gauth.credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scopes=scopes)
+    
     drive = GoogleDrive(gauth)
     print("Conexión con Google Drive establecida correctamente.")
 
@@ -134,34 +143,23 @@ def generate_image():
 
 
         # 3. Añadir el título
-        # Dimensiones del área de texto (de Placid: 951 W x 331 H)
         text_area_width = 951
         text_area_height = 331
-        text_area_x = 62 # Posición X de la esquina superior izquierda del área
-        text_area_y = 873 # Posición Y de la esquina superior izquierda del área
+        text_area_x = 62 
+        text_area_y = 873 
 
-        # --- Ajustes solicitados ---
-        # Desplazar la caja 47 píxeles hacia arriba
         text_area_y -= 47 
         
-        # Ajuste para achicar levemente el alto de la caja de texto
-        # Se reduce el alto en un 10% (ajustable) y se desplaza el inicio para mantener la alineación inferior relativa
-        reduction_factor = 0.10 # 10% de reducción, ajusta este valor
+        reduction_factor = 0.10 
         reduced_height_amount = int(text_area_height * reduction_factor)
         text_area_height -= reduced_height_amount
-        text_area_y += reduced_height_amount # Desplaza Y hacia abajo para mantener la parte inferior
+        text_area_y += reduced_height_amount 
 
-
-        text_color = (255, 255, 255, 255) # Blanco en formato RGBA
-        # Sombra eliminada
-        # shadow_color = (0, 0, 0, 150) # Negro con 60% de opacidad para la sombra (RGBA)
-        # shadow_offset_x = 4 # Desplazamiento de la sombra en X
-        # shadow_offset_y = 4 # Desplazamiento de la sombra en Y
-
+        text_color = (255, 255, 255, 255) 
 
         try:
             if os.path.exists(FONT_PATH):
-                font_size = 80 # Tamaño inicial de la fuente
+                font_size = 80
                 font = ImageFont.truetype(FONT_PATH, size=font_size)
             else:
                 print(f"Advertencia: Fuente '{FONT_PATH}' no encontrada. Usando fuente por defecto.")
@@ -172,17 +170,14 @@ def generate_image():
 
         # --- Lógica para texto multi-línea y ajuste de fuente ---
         lines = []
-        words = title_text.split() # Divide el título en palabras
+        words = title_text.split() 
 
-        # Encuentra el tamaño de fuente óptimo para el texto en el área
-        # Se inicia desde un tamaño grande y se reduce hasta que el texto quepa en las dimensiones.
-        optimal_font_size = 100 # Empezar con un tamaño más grande para el texto
-        max_lines = 4 # Límite máximo de líneas de texto
+        optimal_font_size = 100 
+        max_lines = 4 
 
         while True:
             temp_font = ImageFont.truetype(FONT_PATH, size=optimal_font_size) if os.path.exists(FONT_PATH) else ImageFont.load_default()
             
-            # Divide el texto en líneas que caben en el ancho del área
             test_lines = []
             test_current_line_words = []
             
@@ -194,66 +189,54 @@ def generate_image():
                 if test_width <= text_area_width:
                     test_current_line_words.append(word)
                 else:
-                    if test_current_line_words: # Si hay palabras en la línea actual, guárdala
+                    if test_current_line_words: 
                         test_lines.append(" ".join(test_current_line_words))
-                    test_current_line_words = [word] # Inicia nueva línea con la palabra actual
+                    test_current_line_words = [word] 
             
-            if test_current_line_words: # Añade la última línea si hay palabras
+            if test_current_line_words: 
                 test_lines.append(" ".join(test_current_line_words))
 
-            # Calcular la altura total del texto con estas líneas
-            # La altura de una línea es aproximadamente la altura de la caja de texto para un carácter típico.
-            # Pillow 9.0+ textbbox is (left, top, right, bottom), height = bottom - top
-            # For older Pillow, use getsize or getmask.
-            # Using 'Tg' as a typical character to estimate line height.
-            try: # Use getbbox for Pillow 9.0+
+            try: 
                 line_height_estimate = temp_font.getbbox("Tg")[3] - temp_font.getbbox("Tg")[1]
-            except AttributeError: # Fallback for older Pillow versions
+            except AttributeError: 
                 line_height_estimate = temp_font.getsize("Tg")[1]
 
             total_text_height = (len(test_lines) * line_height_estimate) + (max(0, len(test_lines) - 1) * int(line_height_estimate * LINE_SPACING_FACTOR))
             
-            # Verificar si el texto cabe dentro del área y el número de líneas es aceptable
             if total_text_height <= text_area_height and len(test_lines) <= max_lines:
-                lines = test_lines # Si cabe, esta es la solución
-                font = temp_font # Y esta es la fuente
+                lines = test_lines 
+                font = temp_font 
                 break
             
-            # Si no cabe, reducimos el tamaño de la fuente y reintentamos
             optimal_font_size -= 1
-            if optimal_font_size <= 10: # Límite inferior para evitar bucles infinitos
+            if optimal_font_size <= 10: 
                 print("Advertencia: El texto no cabe en el área con un tamaño de fuente razonable.")
-                lines = test_lines # Usar lo que se pudo generar
+                lines = test_lines 
                 font = temp_font
                 break
             
-            # Recargar la fuente con el nuevo tamaño
             temp_font = ImageFont.truetype(FONT_PATH, size=optimal_font_size) if os.path.exists(FONT_PATH) else ImageFont.load_default()
 
-        # Dibujar las líneas de texto en la imagen
-        y_offset = text_area_y # Punto de inicio para la primera línea
+        y_offset = text_area_y 
 
-        try: # Use getbbox for Pillow 9.0+
+        try: 
             base_line_height = font.getbbox("Tg")[3] - font.getbbox("Tg")[1]
-        except AttributeError: # Fallback for older Pillow versions
+        except AttributeError: 
             base_line_height = font.getsize("Tg")[1]
 
         extra_spacing_per_line = int(base_line_height * LINE_SPACING_FACTOR)
 
-        # Centrar el bloque completo de texto verticalmente si hay espacio
         total_text_block_height = (len(lines) * base_line_height) + (max(0, len(lines) - 1) * extra_spacing_per_line)
         if total_text_block_height < text_area_height:
             y_offset += (text_area_height - total_text_block_height) / 2
 
         for line in lines:
-            # Centrar cada línea horizontalmente dentro del área
             bbox = draw.textbbox((0,0), line, font=font)
             line_width = bbox[2] - bbox[0]
             x_final = text_area_x + (text_area_width - line_width) / 2
             
-            # Dibujar el texto principal
             draw.text((x_final, y_offset), line, font=font, fill=text_color)
-            y_offset += base_line_height + extra_spacing_per_line # Mover a la siguiente línea
+            y_offset += base_line_height + extra_spacing_per_line 
 
         # --- Subir la imagen generada a Google Drive ---
         img_byte_arr = io.BytesIO()
