@@ -1,4 +1,5 @@
 Flask
 Pillow[webp]
 requests
-gunicorn # Servidor web para producción
+gunicorn
+PyDrive2 # Nueva librería para Google Drive
