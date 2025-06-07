@@ -2,7 +2,7 @@
 from flask import Flask, request, send_file, jsonify
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import io
-import requests
+import requests # Todavía necesario si la imagen destacada es una URL de WordPress para N8N
 import os
 import json
 import base64
@@ -30,17 +30,11 @@ LINE_SPACING_FACTOR = 0.3
 GOOGLE_DRIVE_FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID', 'TU_CARPETA_ID_EN_GOOGLE_DRIVE')
 
 # Inicialización de Google Drive fuera de la ruta para que ocurra una sola vez
-# Esta sección se mantiene para que el servicio siga funcionando si decides usar GDrive para otros fines
-# o si quieres guardar las imágenes allí y luego usar una URL de un hosting externo.
 drive = None
 try:
     credentials_json_base64 = os.environ.get('GOOGLE_CREDENTIALS_JSON_BASE64')
     if not credentials_json_base64:
-        # Esto no detendrá la app, solo la conexión a GDrive si la variable no está.
         print("Advertencia: GOOGLE_CREDENTIALS_JSON_BASE64 no configurada. La subida a GDrive podría fallar.")
-        # Se lanza ValueError si la variable no está, lo cual es manejado por el except de abajo
-        # Si no queremos que falle completamente la inicialización si la variable no está,
-        # podríamos hacer 'pass' aquí y simplemente 'drive' será None.
         raise ValueError("GOOGLE_CREDENTIALS_JSON_BASE64 no configurada.") 
 
     credentials_json_bytes = base64.b64decode(credentials_json_base64)
@@ -61,31 +55,31 @@ except Exception as e:
 def generate_image():
     """
     Endpoint para generar una imagen combinando una plantilla, una imagen destacada y un título.
-    Espera un JSON en el cuerpo de la petición con 'image_url' (URL de la imagen destacada)
-    y 'title' (texto del título).
+    Ahora espera la imagen destacada como un archivo binario en 'request.files['image_file']'
+    y el título como un campo de formulario 'title_text' en 'request.form'.
     Guarda la imagen generada en Google Drive (opcional) y devuelve su URL pública.
     """
     if drive is None:
         return jsonify({"error": "El servicio de Google Drive no está disponible."}), 500
 
-    data = request.json
-    if not data:
-        return jsonify({"error": "El cuerpo de la petición debe ser JSON"}), 400
+    # Cambios para aceptar multipart/form-data
+    if 'image_file' not in request.files:
+        return jsonify({"error": "Falta el archivo de imagen en la petición (campo 'image_file')."}), 400
+    
+    image_file = request.files['image_file']
+    title_text = request.form.get('title_text') # Obtener el título del formulario
 
-    image_url = data.get('image_url')
-    title_text = data.get('title')
-
-    if not image_url or not title_text:
-        return jsonify({"error": "Faltan 'image_url' o 'title' en la petición"}), 400
+    if not title_text:
+        return jsonify({"error": "Falta el título en la petición (campo 'title_text')."}), 400
 
     try:
         # 1. Cargar la plantilla base
         base_image = Image.open(BASE_IMAGE_PATH).convert("RGBA")
         draw = ImageDraw.Draw(base_image)
 
-        # 2. Cargar y procesar la imagen destacada
-        response = requests.get(image_url)
-        featured_image = Image.open(io.BytesIO(response.content)).convert("RGBA")
+        # 2. Cargar y procesar la imagen destacada (directamente desde el archivo recibido)
+        # featured_image = Image.open(io.BytesIO(response.content)).convert("RGBA") # Línea anterior
+        featured_image = Image.open(image_file.stream).convert("RGBA") # Leer directamente del stream del archivo
 
         target_width_img = 1080
         target_height_img = 844
@@ -226,32 +220,27 @@ def generate_image():
         base_image.save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0) # Mueve el puntero al inicio del stream para la subida
 
-        image_public_url = None # Inicializar a None para el caso de que no se suba
+        image_public_url = None 
         if drive is not None and GOOGLE_DRIVE_FOLDER_ID != 'TU_CARPETA_ID_EN_GOOGLE_DRIVE':
             try:
-                # Crear un archivo de Google Drive
                 file_metadata = {
                     'title': image_filename,
                     'parents': [{'id': GOOGLE_DRIVE_FOLDER_ID}],
                     'mimeType': 'image/png'
                 }
                 file = drive.CreateFile(file_metadata)
-                file.content = img_byte_arr # Asignar el contenido binario desde el buffer
-                file.Upload() # Subir el archivo
+                file.content = img_byte_arr 
+                file.Upload()
 
-                # Hacer el archivo público (para que pueda ser accesible por Instagram/N8N)
                 file.InsertPermission({
                     'type': 'anyone',
                     'value': 'anyone',
                     'role': 'reader'
                 })
                 
-                time.sleep(1) # Retraso de 1 segundo para que los permisos se apliquen
-
-                # Recargar los metadatos para obtener webContentLink y webViewLink
+                time.sleep(1) 
                 file.FetchMetadata(fields='webViewLink, alternateLink, webContentLink')
 
-                # Priorizar webContentLink para descarga directa. Luego webViewLink, luego alternateLink.
                 image_public_url = file.get('webContentLink') 
                 if not image_public_url:
                     image_public_url = file.get('webViewLink') 
@@ -265,7 +254,6 @@ def generate_image():
 
             except Exception as gdrive_e:
                 print(f"Error al subir la imagen a Google Drive: {gdrive_e}")
-                # En caso de error de Google Drive, no se devuelve la URL, lo que causará un error en N8N
                 image_public_url = None 
         
         # --- Devolver la URL de la imagen generada a N8N ---
