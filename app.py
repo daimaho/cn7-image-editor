@@ -18,6 +18,7 @@ app = Flask(__name__)
 BASE_IMAGE_PATH = 'plantilla_base.jpg'
 
 # Define la ruta a tu fuente. Asegúrate de que este archivo .ttf esté en la misma carpeta.
+# Si no usas esta fuente, el script intentará cargar una por defecto.
 FONT_PATH = "Roboto-Bold.ttf"
 
 # Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
@@ -269,15 +270,16 @@ def generate_image():
         time.sleep(1) # Retraso de 1 segundo (ajustable si es necesario)
 
         # Recargar los metadatos del archivo para obtener las propiedades actualizadas, incluyendo webViewLink
-        file.FetchMetadata(fields='webViewLink, alternateLink')
+        file.FetchMetadata(fields='webViewLink, alternateLink, webContentLink') # Añadir webContentLink
 
         # Obtener la URL web del archivo subido
-        # webViewLink es más robusto para redes sociales para visualización directa.
-        # Si webViewLink no está disponible, se intentará alternateLink.
-        image_public_url = file.get('webViewLink') 
+        # Priorizar webContentLink para descarga directa. Luego webViewLink, luego alternateLink.
+        image_public_url = file.get('webContentLink') # URL de contenido directo
         if not image_public_url:
-            image_public_url = file.get('alternateLink')
-            print(f"Advertencia: 'webViewLink' no encontrado, usando 'alternateLink': {image_public_url}")
+            image_public_url = file.get('webViewLink') 
+            if not image_public_url:
+                image_public_url = file.get('alternateLink')
+                print(f"Advertencia: 'webViewLink' no encontrado, usando 'alternateLink': {image_public_url}")
 
         if not image_public_url:
             raise ValueError("No se pudo obtener una URL pública para la imagen de Google Drive.")
