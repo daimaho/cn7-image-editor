@@ -8,7 +8,6 @@ import json
 import base64
 import time # Importar la librería time para añadir retrasos
 from pydrive2.auth import GoogleAuth
-# Importar ServiceAccountCredentials directamente si se usa el método from_json_keyfile_dict
 from oauth2client.service_account import ServiceAccountCredentials 
 from pydrive2.drive import GoogleDrive
 
@@ -22,7 +21,7 @@ BASE_IMAGE_PATH = 'plantilla_base.jpg'
 FONT_PATH = "Roboto-Bold.ttf"
 
 # Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
-LINE_SPACING_FACTOR = 0.3 # Ampliado levemente de 0.2 a 0.3
+LINE_SPACING_FACTOR = 0.3 
 
 # --- Configuración de Google Drive ---
 # ID de la carpeta de Google Drive donde quieres guardar las imágenes.
@@ -31,25 +30,23 @@ LINE_SPACING_FACTOR = 0.3 # Ampliado levemente de 0.2 a 0.3
 GOOGLE_DRIVE_FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID', 'TU_CARPETA_ID_EN_GOOGLE_DRIVE')
 
 # Inicialización de Google Drive fuera de la ruta para que ocurra una sola vez
+# Esta sección se mantiene para que el servicio siga funcionando si decides usar GDrive para otros fines
+# o si quieres guardar las imágenes allí y luego usar una URL de un hosting externo.
 drive = None
 try:
-    # Decodificar las credenciales de la cuenta de servicio desde la variable de entorno
     credentials_json_base64 = os.environ.get('GOOGLE_CREDENTIALS_JSON_BASE64')
     if not credentials_json_base64:
-        raise ValueError("La variable de entorno 'GOOGLE_CREDENTIALS_JSON_BASE64' no está configurada.")
+        # Esto no detendrá la app, solo la conexión a GDrive si la variable no está.
+        print("Advertencia: GOOGLE_CREDENTIALS_JSON_BASE64 no configurada. La subida a GDrive podría fallar.")
+        # Se lanza ValueError si la variable no está, lo cual es manejado por el except de abajo
+        # Si no queremos que falle completamente la inicialización si la variable no está,
+        # podríamos hacer 'pass' aquí y simplemente 'drive' será None.
+        raise ValueError("GOOGLE_CREDENTIALS_JSON_BASE64 no configurada.") 
 
     credentials_json_bytes = base64.b64decode(credentials_json_base64)
     credentials_info = json.loads(credentials_json_bytes.decode('utf-8'))
 
-    # --- CAMBIO AQUÍ: Inicialización de GoogleAuth y Credenciales ---
-    # Define los ámbitos (scopes) de acceso que necesitas para Google Drive
-    # 'file' para acceso completo a archivos creados por la app, o 'drive' para acceso a todo el Drive.
-    # 'https://www.googleapis.com/auth/drive' es el scope completo de Drive.
-    # 'https://www.googleapis.com/auth/drive.file' para acceso a archivos creados o abiertos por la app.
-    # Si vas a subir a una carpeta específica, 'drive.file' suele ser suficiente.
-    scopes = ['https://www.googleapis.com/auth/drive.file'] # O 'https://www.googleapis.com/auth/drive'
-
-    # Crea las credenciales de la cuenta de servicio directamente desde el diccionario
+    scopes = ['https://www.googleapis.com/auth/drive.file']
     gauth = GoogleAuth()
     gauth.credentials = ServiceAccountCredentials.from_json_keyfile_dict(credentials_info, scopes=scopes)
     
@@ -58,7 +55,7 @@ try:
 
 except Exception as e:
     print(f"Error al inicializar la conexión con Google Drive: {e}")
-    drive = None # Asegurar que drive sea None si falla la inicialización
+    drive = None
 
 @app.route('/generate-image', methods=['POST'])
 def generate_image():
@@ -66,7 +63,7 @@ def generate_image():
     Endpoint para generar una imagen combinando una plantilla, una imagen destacada y un título.
     Espera un JSON en el cuerpo de la petición con 'image_url' (URL de la imagen destacada)
     y 'title' (texto del título).
-    Guarda la imagen generada en Google Drive y devuelve su URL pública.
+    Guarda la imagen generada en Google Drive (opcional) y devuelve su URL pública.
     """
     if drive is None:
         return jsonify({"error": "El servicio de Google Drive no está disponible."}), 500
@@ -90,52 +87,34 @@ def generate_image():
         response = requests.get(image_url)
         featured_image = Image.open(io.BytesIO(response.content)).convert("RGBA")
 
-        # Dimensiones del área donde la imagen destacada debe ir
-        # De Placid (foto.jpg) y solicitud: 1080 W x 844 H
         target_width_img = 1080
         target_height_img = 844
         target_position_x_img = 0
         target_position_y_img = 0
 
-        # Calcular nuevas dimensiones para ajustar la imagen al 100% de alto proporcionalmente
         original_aspect_ratio = featured_image.width / featured_image.height
         new_width_scaled = int(target_height_img * original_aspect_ratio)
         new_height_scaled = target_height_img
 
         scaled_featured_image = featured_image.resize((new_width_scaled, new_height_scaled), Image.Resampling.LANCZOS)
 
-        # Verificar si la imagen escalada es más angosta que el ancho objetivo (1080px)
         if new_width_scaled < target_width_img:
-            # Caso 1: La imagen es vertical y no cubre todo el ancho. Rellenar con fondo desenfocado.
-            
-            # Cargar la plantilla de fondo nuevamente para el desenfoque
-            # Se usa la plantilla base como fondo para el desenfoque
             background_fill = Image.open(BASE_IMAGE_PATH).convert("RGBA")
-            
-            # Redimensionar el fondo para que cubra el área objetivo
-            # Usar ImageOps.fit para asegurarse de que el fondo cubra el área sin distorsión
             background_fill = ImageOps.fit(background_fill, 
                                           (target_width_img, target_height_img), 
                                           method=Image.Resampling.LANCZOS, 
                                           centering=(0.5, 0.5))
-
-            # Aplicar desenfoque al fondo (radio de 80, ajustable si es demasiado fuerte)
             background_fill = background_fill.filter(ImageFilter.GaussianBlur(radius=80))
 
-            # Pegar el fondo desenfocado en la base_image en la posición correcta
             base_image.paste(background_fill, 
                              (target_position_x_img, target_position_y_img))
 
-            # Calcular la posición para centrar la imagen destacada sobre el fondo desenfocado
             paste_x = target_position_x_img + (target_width_img - scaled_featured_image.width) // 2
             paste_y = target_position_y_img + (target_height_img - scaled_featured_image.height) // 2
             
             base_image.paste(scaled_featured_image, (paste_x, paste_y), scaled_featured_image)
 
         else:
-            # Caso 2: La imagen es horizontal o cuadrada y cubre o excede el ancho objetivo.
-            # Se recorta si es más ancha para encajar en el ancho objetivo (1080px).
-            # Calcular recorte para centrar horizontalmente si la imagen es más ancha de lo necesario
             left_crop = (scaled_featured_image.width - target_width_img) // 2
             right_crop = left_crop + target_width_img
             cropped_image = scaled_featured_image.crop((left_crop, 0, right_crop, target_height_img))
@@ -247,50 +226,57 @@ def generate_image():
         base_image.save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0) # Mueve el puntero al inicio del stream para la subida
 
-        # Crear un archivo de Google Drive
-        file_metadata = {
-            'title': image_filename,
-            'parents': [{'id': GOOGLE_DRIVE_FOLDER_ID}],
-            'mimeType': 'image/png'
-        }
-        file = drive.CreateFile(file_metadata)
-        file.content = img_byte_arr # Asignar el contenido binario
-        file.Upload() # Subir el archivo
+        image_public_url = None # Inicializar a None para el caso de que no se suba
+        if drive is not None and GOOGLE_DRIVE_FOLDER_ID != 'TU_CARPETA_ID_EN_GOOGLE_DRIVE':
+            try:
+                # Crear un archivo de Google Drive
+                file_metadata = {
+                    'title': image_filename,
+                    'parents': [{'id': GOOGLE_DRIVE_FOLDER_ID}],
+                    'mimeType': 'image/png'
+                }
+                file = drive.CreateFile(file_metadata)
+                file.content = img_byte_arr # Asignar el contenido binario desde el buffer
+                file.Upload() # Subir el archivo
 
-        # Hacer el archivo público (para que pueda ser accesible por Instagram/N8N)
-        # La propiedad webViewLink solo se genera una vez que se han insertado los permisos.
-        # Es por eso que añadimos un pequeño retraso y luego recargamos los metadatos del archivo.
-        file.InsertPermission({
-            'type': 'anyone',
-            'value': 'anyone',
-            'role': 'reader'
-        })
+                # Hacer el archivo público (para que pueda ser accesible por Instagram/N8N)
+                file.InsertPermission({
+                    'type': 'anyone',
+                    'value': 'anyone',
+                    'role': 'reader'
+                })
+                
+                time.sleep(1) # Retraso de 1 segundo para que los permisos se apliquen
+
+                # Recargar los metadatos para obtener webContentLink y webViewLink
+                file.FetchMetadata(fields='webViewLink, alternateLink, webContentLink')
+
+                # Priorizar webContentLink para descarga directa. Luego webViewLink, luego alternateLink.
+                image_public_url = file.get('webContentLink') 
+                if not image_public_url:
+                    image_public_url = file.get('webViewLink') 
+                    if not image_public_url:
+                        image_public_url = file.get('alternateLink')
+                
+                if not image_public_url:
+                    print("Advertencia: No se pudo obtener una URL pública válida para la imagen de Google Drive.")
+
+                print(f"Imagen subida a Google Drive: {image_public_url}")
+
+            except Exception as gdrive_e:
+                print(f"Error al subir la imagen a Google Drive: {gdrive_e}")
+                # En caso de error de Google Drive, no se devuelve la URL, lo que causará un error en N8N
+                image_public_url = None 
         
-        # Añadir un pequeño retraso para que los permisos se apliquen en Google Drive
-        time.sleep(1) # Retraso de 1 segundo (ajustable si es necesario)
-
-        # Recargar los metadatos del archivo para obtener las propiedades actualizadas, incluyendo webViewLink
-        file.FetchMetadata(fields='webViewLink, alternateLink, webContentLink') # Añadir webContentLink
-
-        # Obtener la URL web del archivo subido
-        # Priorizar webContentLink para descarga directa. Luego webViewLink, luego alternateLink.
-        image_public_url = file.get('webContentLink') # URL de contenido directo
-        if not image_public_url:
-            image_public_url = file.get('webViewLink') 
-            if not image_public_url:
-                image_public_url = file.get('alternateLink')
-                print(f"Advertencia: 'webViewLink' no encontrado, usando 'alternateLink': {image_public_url}")
-
-        if not image_public_url:
-            raise ValueError("No se pudo obtener una URL pública para la imagen de Google Drive.")
-
-        print(f"Imagen subida a Google Drive: {image_public_url}")
-
-        # Devolver la URL de la imagen generada a N8N
-        return jsonify({"image_url": image_public_url}), 200
+        # --- Devolver la URL de la imagen generada a N8N ---
+        # Si la subida a GDrive fue exitosa, se devuelve la URL. Si no, un error.
+        if image_public_url:
+            return jsonify({"image_url": image_public_url}), 200
+        else:
+            return jsonify({"error": "No se pudo generar la URL pública de la imagen o subir a Google Drive."}), 500
 
     except Exception as e:
-        print(f"Error al generar o subir la imagen: {e}")
+        print(f"Error al generar la imagen: {e}")
         return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
 
 if __name__ == '__main__':
