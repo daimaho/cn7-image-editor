@@ -108,7 +108,19 @@ def generate_image():
         text_area_x = 62 # Posición X de la esquina superior izquierda del área
         text_area_y = 873 # Posición Y de la esquina superior izquierda del área
 
+        # Ajuste para achicar levemente el alto de la caja de texto
+        # Se reduce el alto en un 10% (ajustable) y se desplaza el inicio para mantener la alineación inferior relativa
+        reduction_factor = 0.10 # 10% de reducción, ajusta este valor
+        reduced_height_amount = int(text_area_height * reduction_factor)
+        text_area_height -= reduced_height_amount
+        text_area_y += reduced_height_amount # Desplaza Y hacia abajo para mantener la parte inferior
+
+
         text_color = (255, 255, 255, 255) # Blanco en formato RGBA
+        shadow_color = (0, 0, 0, 150) # Negro con 60% de opacidad para la sombra (RGBA)
+        shadow_offset_x = 4 # Desplazamiento de la sombra en X
+        shadow_offset_y = 4 # Desplazamiento de la sombra en Y
+
 
         try:
             if os.path.exists(FONT_PATH):
@@ -202,6 +214,9 @@ def generate_image():
             line_width = bbox[2] - bbox[0]
             x_final = text_area_x + (text_area_width - line_width) / 2
             
+            # Dibujar la sombra
+            draw.text((x_final + shadow_offset_x, y_offset + shadow_offset_y), line, font=font, fill=shadow_color)
+            # Dibujar el texto principal
             draw.text((x_final, y_offset), line, font=font, fill=text_color)
             y_offset += base_line_height + extra_spacing_per_line # Mover a la siguiente línea
 
