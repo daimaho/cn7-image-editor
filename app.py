@@ -6,6 +6,7 @@ import requests
 import os
 import json
 import base64
+import time # Importar la librería time para añadir retrasos
 from pydrive2.auth import GoogleAuth
 # Importar ServiceAccountCredentials directamente si se usa el método from_json_keyfile_dict
 from oauth2client.service_account import ServiceAccountCredentials 
@@ -256,16 +257,31 @@ def generate_image():
         file.Upload() # Subir el archivo
 
         # Hacer el archivo público (para que pueda ser accesible por Instagram/N8N)
+        # La propiedad webViewLink solo se genera una vez que se han insertado los permisos.
+        # Es por eso que añadimos un pequeño retraso y luego recargamos los metadatos del archivo.
         file.InsertPermission({
             'type': 'anyone',
             'value': 'anyone',
             'role': 'reader'
         })
+        
+        # Añadir un pequeño retraso para que los permisos se apliquen en Google Drive
+        time.sleep(1) # Retraso de 1 segundo (ajustable si es necesario)
+
+        # Recargar los metadatos del archivo para obtener las propiedades actualizadas, incluyendo webViewLink
+        file.FetchMetadata(fields='webViewLink, alternateLink')
 
         # Obtener la URL web del archivo subido
-        # La URL para ver en navegador es 'webContentLink', para usar en Instagram/Twitter es 'thumbnailLink' o 'webViewLink'
-        # webViewLink es más robusto para redes sociales.
-        image_public_url = file['webViewLink'] 
+        # webViewLink es más robusto para redes sociales para visualización directa.
+        # Si webViewLink no está disponible, se intentará alternateLink.
+        image_public_url = file.get('webViewLink') 
+        if not image_public_url:
+            image_public_url = file.get('alternateLink')
+            print(f"Advertencia: 'webViewLink' no encontrado, usando 'alternateLink': {image_public_url}")
+
+        if not image_public_url:
+            raise ValueError("No se pudo obtener una URL pública para la imagen de Google Drive.")
+
         print(f"Imagen subida a Google Drive: {image_public_url}")
 
         # Devolver la URL de la imagen generada a N8N
