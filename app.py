@@ -2,7 +2,7 @@
 from flask import Flask, request, send_file, jsonify
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import io
-import requests # Todavía necesario si la imagen destacada es una URL de WordPress para N8N
+import requests
 import os
 import json
 import base64
@@ -55,31 +55,31 @@ except Exception as e:
 def generate_image():
     """
     Endpoint para generar una imagen combinando una plantilla, una imagen destacada y un título.
-    Ahora espera la imagen destacada como un archivo binario en 'request.files['image_file']'
-    y el título como un campo de formulario 'title_text' en 'request.form'.
+    Espera un JSON en el cuerpo de la petición con 'image_url' (URL de la imagen destacada)
+    y 'title' (texto del título).
     Guarda la imagen generada en Google Drive (opcional) y devuelve su URL pública.
     """
     if drive is None:
         return jsonify({"error": "El servicio de Google Drive no está disponible."}), 500
 
-    # Cambios para aceptar multipart/form-data
-    if 'image_file' not in request.files:
-        return jsonify({"error": "Falta el archivo de imagen en la petición (campo 'image_file')."}), 400
-    
-    image_file = request.files['image_file']
-    title_text = request.form.get('title_text') # Obtener el título del formulario
+    data = request.json
+    if not data:
+        return jsonify({"error": "El cuerpo de la petición debe ser JSON"}), 400
 
-    if not title_text:
-        return jsonify({"error": "Falta el título en la petición (campo 'title_text')."}), 400
+    image_url = data.get('image_url')
+    title_text = data.get('title')
+
+    if not image_url or not title_text:
+        return jsonify({"error": "Faltan 'image_url' o 'title' en la petición"}), 400
 
     try:
         # 1. Cargar la plantilla base
         base_image = Image.open(BASE_IMAGE_PATH).convert("RGBA")
         draw = ImageDraw.Draw(base_image)
 
-        # 2. Cargar y procesar la imagen destacada (directamente desde el archivo recibido)
-        # featured_image = Image.open(io.BytesIO(response.content)).convert("RGBA") # Línea anterior
-        featured_image = Image.open(image_file.stream).convert("RGBA") # Leer directamente del stream del archivo
+        # 2. Cargar y procesar la imagen destacada
+        response = requests.get(image_url)
+        featured_image = Image.open(io.BytesIO(response.content)).convert("RGBA")
 
         target_width_img = 1080
         target_height_img = 844
