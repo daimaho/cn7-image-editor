@@ -16,7 +16,7 @@ FONT_PATH = "Roboto-Bold.ttf"
 
 # Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
 # Ajusta este valor para controlar la separación entre líneas.
-LINE_SPACING_FACTOR = 0.2
+LINE_SPACING_FACTOR = 0.3 # Ampliado levemente de 0.2 a 0.3
 
 @app.route('/generate-image', methods=['POST'])
 def generate_image():
@@ -219,8 +219,6 @@ def generate_image():
             line_width = bbox[2] - bbox[0]
             x_final = text_area_x + (text_area_width - line_width) / 2
             
-            # Sombra eliminada
-            # draw.text((x_final + shadow_offset_x, y_offset + shadow_offset_y), line, font=font, fill=shadow_color)
             # Dibujar el texto principal
             draw.text((x_final, y_offset), line, font=font, fill=text_color)
             y_offset += base_line_height + extra_spacing_per_line # Mover a la siguiente línea
