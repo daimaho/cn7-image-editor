@@ -7,9 +7,16 @@ import os
 import json
 import base64
 import time # Importar la librería time para añadir retrasos
+
+# Librerías para Google Drive
 from pydrive2.auth import GoogleAuth
 from oauth2client.service_account import ServiceAccountCredentials 
 from pydrive2.drive import GoogleDrive
+
+# Librerías para Cloudinary
+import cloudinary
+import cloudinary.uploader
+
 
 app = Flask(__name__)
 
@@ -51,16 +58,26 @@ except Exception as e:
     print(f"Error al inicializar la conexión con Google Drive: {e}")
     drive = None
 
+# --- Configuración de Cloudinary ---
+# ¡IMPORTANTE! Configura estas variables de entorno en Railway para tu servicio.
+# CLOUD_NAME, API_KEY, API_SECRET se obtienen de tu Dashboard de Cloudinary.
+cloudinary.config( 
+  cloud_name = os.environ.get('CLOUDINARY_CLOUD_NAME', 'tu_cloud_name'), 
+  api_key = os.environ.get('CLOUDINARY_API_KEY', 'tu_api_key'), 
+  api_secret = os.environ.get('CLOUDINARY_API_SECRET', 'tu_api_secret') 
+)
+
 @app.route('/generate-image', methods=['POST'])
 def generate_image():
     """
     Endpoint para generar una imagen combinando una plantilla, una imagen destacada y un título.
     Espera un JSON en el cuerpo de la petición con 'image_url' (URL de la imagen destacada)
     y 'title' (texto del título).
-    Guarda la imagen generada en Google Drive (opcional) y devuelve su URL pública.
+    Guarda la imagen generada en Google Drive (opcional) y devuelve su URL pública de Cloudinary.
     """
-    if drive is None:
-        return jsonify({"error": "El servicio de Google Drive no está disponible."}), 500
+    # La validación de Google Drive aquí ya no es crítica si Cloudinary es la principal
+    # if drive is None:
+    #     return jsonify({"error": "El servicio de Google Drive no está disponible."}), 500
 
     data = request.json
     if not data:
@@ -213,16 +230,34 @@ def generate_image():
             draw.text((x_final, y_offset), line, font=font, fill=text_color)
             y_offset += base_line_height + extra_spacing_per_line 
 
-        # --- Subir la imagen generada a Google Drive ---
+        # --- Flujo de subida y devolución de URL ---
         img_byte_arr = io.BytesIO()
-        image_filename = f"cn7_noticia_{os.urandom(4).hex()}.png" # Nombre único para el archivo PNG
+        image_filename = f"cn7_noticia_{os.urandom(4).hex()}.png" # Nombre único
 
         base_image.save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0) # Mueve el puntero al inicio del stream para la subida
 
-        image_public_url = None 
+        cloudinary_image_url = None
+        gdrive_image_url = None
+
+        # 1. Subir a Cloudinary (para Instagram y Link Directo)
+        try:
+            cloudinary_response = cloudinary.uploader.upload(img_byte_arr, 
+                                                            folder="cn7_images", # Carpeta en Cloudinary (creará si no existe)
+                                                            public_id=image_filename.split('.')[0], # Usar el nombre sin extensión
+                                                            resource_type="image")
+            cloudinary_image_url = cloudinary_response['secure_url']
+            print(f"Imagen subida a Cloudinary: {cloudinary_image_url}")
+        except Exception as cl_e:
+            print(f"Error al subir la imagen a Cloudinary: {cl_e}")
+            # Si Cloudinary falla, se seguirá intentando con GDrive o se devolverá un error.
+
+        # 2. Subir a Google Drive (Opcional, para persistencia y Google Sheets)
+        # Solo si drive está inicializado y la carpeta es válida
         if drive is not None and GOOGLE_DRIVE_FOLDER_ID != 'TU_CARPETA_ID_EN_GOOGLE_DRIVE':
             try:
+                # Resetear el puntero para GDrive ya que se usó para Cloudinary
+                img_byte_arr.seek(0) 
                 file_metadata = {
                     'title': image_filename,
                     'parents': [{'id': GOOGLE_DRIVE_FOLDER_ID}],
@@ -241,27 +276,32 @@ def generate_image():
                 time.sleep(1) 
                 file.FetchMetadata(fields='webViewLink, alternateLink, webContentLink')
 
-                image_public_url = file.get('webContentLink') 
-                if not image_public_url:
-                    image_public_url = file.get('webViewLink') 
-                    if not image_public_url:
-                        image_public_url = file.get('alternateLink')
+                gdrive_image_url = file.get('webContentLink') 
+                if not gdrive_image_url:
+                    gdrive_image_url = file.get('webViewLink') 
+                    if not gdrive_image_url:
+                        gdrive_image_url = file.get('alternateLink')
                 
-                if not image_public_url:
+                if not gdrive_image_url:
                     print("Advertencia: No se pudo obtener una URL pública válida para la imagen de Google Drive.")
 
-                print(f"Imagen subida a Google Drive: {image_public_url}")
+                print(f"Imagen subida a Google Drive: {gdrive_image_url}")
 
             except Exception as gdrive_e:
                 print(f"Error al subir la imagen a Google Drive: {gdrive_e}")
-                image_public_url = None 
         
-        # --- Devolver la URL de la imagen generada a N8N ---
-        # Si la subida a GDrive fue exitosa, se devuelve la URL. Si no, un error.
-        if image_public_url:
-            return jsonify({"image_url": image_public_url}), 200
+        # --- Devolver la URL de la imagen (Prioridad: Cloudinary, luego Google Drive) ---
+        if cloudinary_image_url:
+            # Si Cloudinary tuvo éxito, devolvemos su URL
+            return jsonify({"image_url": cloudinary_image_url, 
+                            "gdrive_image_url": gdrive_image_url}), 200 # También devolvemos GDrive URL si existe
+        elif gdrive_image_url:
+            # Si Cloudinary falló pero GDrive tuvo éxito, devolvemos GDrive URL
+            return jsonify({"image_url": gdrive_image_url, 
+                            "gdrive_image_url": gdrive_image_url}), 200
         else:
-            return jsonify({"error": "No se pudo generar la URL pública de la imagen o subir a Google Drive."}), 500
+            # Si ambos fallaron
+            return jsonify({"error": "No se pudo generar la URL pública de la imagen en Cloudinary ni en Google Drive."}), 500
 
     except Exception as e:
         print(f"Error al generar la imagen: {e}")
