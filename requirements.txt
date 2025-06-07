@@ -1,4 +1,4 @@
 Flask
-Pillow
+Pillow[webp]
 requests
 gunicorn # Servidor web para producción
