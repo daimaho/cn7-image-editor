@@ -1,9 +1,13 @@
 # Importar las librerías necesarias
 from flask import Flask, request, send_file, jsonify
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter # Se añade ImageFilter para el desenfoque
-import io # Para manejar streams de bytes (archivos en memoria)
-import requests # Para descargar imágenes desde URLs
-import os # Para operaciones con el sistema de archivos, como verificar la existencia de fuentes
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+import io
+import requests
+import os
+import json
+import base64
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 
 app = Flask(__name__)
 
@@ -15,8 +19,35 @@ BASE_IMAGE_PATH = 'plantilla_base.jpg'
 FONT_PATH = "Roboto-Bold.ttf"
 
 # Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
-# Ajusta este valor para controlar la separación entre líneas.
 LINE_SPACING_FACTOR = 0.3 # Ampliado levemente de 0.2 a 0.3
+
+# --- Configuración de Google Drive ---
+# ID de la carpeta de Google Drive donde quieres guardar las imágenes.
+# ¡IMPORTANTE! Reemplaza 'TU_CARPETA_ID_EN_GOOGLE_DRIVE' con el ID real de tu carpeta.
+# Para obtener el ID, abre la carpeta en Google Drive y el ID estará en la URL (ej. drive.google.com/drive/folders/ID_DE_LA_CARPETA)
+GOOGLE_DRIVE_FOLDER_ID = os.environ.get('GOOGLE_DRIVE_FOLDER_ID', 'TU_CARPETA_ID_EN_GOOGLE_DRIVE')
+
+# Inicialización de Google Drive fuera de la ruta para que ocurra una sola vez
+drive = None
+try:
+    # Decodificar las credenciales de la cuenta de servicio desde la variable de entorno
+    credentials_json_base64 = os.environ.get('GOOGLE_CREDENTIALS_JSON_BASE64')
+    if not credentials_json_base64:
+        raise ValueError("La variable de entorno 'GOOGLE_CREDENTIALS_JSON_BASE64' no está configurada.")
+
+    credentials_json_bytes = base64.b64decode(credentials_json_base64)
+    credentials_info = json.loads(credentials_json_bytes.decode('utf-8'))
+
+    # Configurar PyDrive para usar la cuenta de servicio
+    gauth = GoogleAuth()
+    gauth.credentials = gauth.attr_from_dict(gauth.credentials, credentials_info)
+    gauth.ServiceAuth() # Autenticar con la cuenta de servicio
+    drive = GoogleDrive(gauth)
+    print("Conexión con Google Drive establecida correctamente.")
+
+except Exception as e:
+    print(f"Error al inicializar la conexión con Google Drive: {e}")
+    drive = None # Asegurar que drive sea None si falla la inicialización
 
 @app.route('/generate-image', methods=['POST'])
 def generate_image():
@@ -24,18 +55,19 @@ def generate_image():
     Endpoint para generar una imagen combinando una plantilla, una imagen destacada y un título.
     Espera un JSON en el cuerpo de la petición con 'image_url' (URL de la imagen destacada)
     y 'title' (texto del título).
-    Devuelve la imagen generada como un archivo PNG.
+    Guarda la imagen generada en Google Drive y devuelve su URL pública.
     """
+    if drive is None:
+        return jsonify({"error": "El servicio de Google Drive no está disponible."}), 500
+
     data = request.json
     if not data:
-        # Si no se recibe un cuerpo JSON, devuelve un error 400
         return jsonify({"error": "El cuerpo de la petición debe ser JSON"}), 400
 
     image_url = data.get('image_url')
     title_text = data.get('title')
 
     if not image_url or not title_text:
-        # Si faltan los parámetros esenciales, devuelve un error 400
         return jsonify({"error": "Faltan 'image_url' o 'title' en la petición"}), 400
 
     try:
@@ -223,20 +255,42 @@ def generate_image():
             draw.text((x_final, y_offset), line, font=font, fill=text_color)
             y_offset += base_line_height + extra_spacing_per_line # Mover a la siguiente línea
 
-        # --- SALIDA DE LA IMAGEN ---
+        # --- Subir la imagen generada a Google Drive ---
         img_byte_arr = io.BytesIO()
-        base_image.save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
+        image_filename = f"cn7_noticia_{os.urandom(4).hex()}.png" # Nombre único para el archivo PNG
 
-        return send_file(img_byte_arr, mimetype='image/png')
+        base_image.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0) # Mueve el puntero al inicio del stream para la subida
+
+        # Crear un archivo de Google Drive
+        file_metadata = {
+            'title': image_filename,
+            'parents': [{'id': GOOGLE_DRIVE_FOLDER_ID}],
+            'mimeType': 'image/png'
+        }
+        file = drive.CreateFile(file_metadata)
+        file.content = img_byte_arr # Asignar el contenido binario
+        file.Upload() # Subir el archivo
+
+        # Hacer el archivo público (para que pueda ser accesible por Instagram/N8N)
+        file.InsertPermission({
+            'type': 'anyone',
+            'value': 'anyone',
+            'role': 'reader'
+        })
+
+        # Obtener la URL web del archivo subido
+        # La URL para ver en navegador es 'webContentLink', para usar en Instagram/Twitter es 'thumbnailLink' o 'webViewLink'
+        # webViewLink es más robusto para redes sociales.
+        image_public_url = file['webViewLink'] 
+        print(f"Imagen subida a Google Drive: {image_public_url}")
+
+        # Devolver la URL de la imagen generada a N8N
+        return jsonify({"image_url": image_public_url}), 200
 
     except Exception as e:
-        # Captura cualquier error durante el proceso y devuelve una respuesta de error 500
-        print(f"Error al generar la imagen: {e}")
+        print(f"Error al generar o subir la imagen: {e}")
         return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    # Cuando se ejecuta localmente o en un entorno como Railway, se usa el puerto
-    # definido por la variable de entorno 'PORT', o el puerto 8000 por defecto.
-    # El host '0.0.0.0' hace que la aplicación sea accesible desde cualquier IP.
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)))
