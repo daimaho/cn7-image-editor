@@ -194,20 +194,22 @@ def generate_image():
         img_byte_arr = io.BytesIO()
         image_filename = f"cn7_noticia_{os.urandom(4).hex()}.png" # Nombre único
 
-        base_image.save(img_byte_arr, format='PNG')
+        base_image.save(img_byte_arr, format='PNG') # Guardar en PNG para calidad antes de subir
         img_byte_arr.seek(0) # Mueve el puntero al inicio del stream para la subida
 
         cloudinary_image_url = None
         
         try:
             # Crea una copia del stream para Cloudinary
+            # AÑADIR format="jpg" para la salida de Cloudinary
             cloudinary_upload_stream = io.BytesIO(img_byte_arr.getvalue())
             cloudinary_upload_stream.seek(0)
 
             cloudinary_response = cloudinary.uploader.upload(cloudinary_upload_stream, 
                                                             folder="cn7_images", 
                                                             public_id=image_filename.split('.')[0], 
-                                                            resource_type="image")
+                                                            resource_type="image",
+                                                            format="jpg") # <--- CAMBIO AQUÍ: Fuerza la salida a JPG
             cloudinary_image_url = cloudinary_response['secure_url']
             print(f"Imagen subida a Cloudinary: {cloudinary_image_url}")
         except Exception as cl_e:
