@@ -2,7 +2,7 @@
 from flask import Flask, request, send_file, jsonify
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import io
-import requests
+import requests # Todavía necesario si la imagen destacada es una URL de WordPress para N8N para descargarla
 import os
 import json
 import base64
@@ -24,7 +24,6 @@ app = Flask(__name__)
 BASE_IMAGE_PATH = 'plantilla_base.jpg'
 
 # Define la ruta a tu fuente. Asegúrate de que este archivo .ttf esté en la misma carpeta.
-# Si no usas esta fuente, el script intentará cargar una por defecto.
 FONT_PATH = "Roboto-Bold.ttf"
 
 # Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
@@ -41,7 +40,9 @@ drive = None
 try:
     credentials_json_base64 = os.environ.get('GOOGLE_CREDENTIALS_JSON_BASE64')
     if not credentials_json_base64:
-        print("Advertencia: GOOGLE_CREDENTIALS_JSON_BASE64 no configurada. La subida a GDrive podría fallar.")
+        # Se lanza ValueError si la variable no está, lo cual es manejado por el except de abajo
+        # Si no queremos que falle completamente la inicialización si la variable no está,
+        # podríamos hacer 'pass' aquí y simplemente 'drive' será None.
         raise ValueError("GOOGLE_CREDENTIALS_JSON_BASE64 no configurada.") 
 
     credentials_json_bytes = base64.b64decode(credentials_json_base64)
@@ -71,32 +72,26 @@ cloudinary.config(
 def generate_image():
     """
     Endpoint para generar una imagen combinando una plantilla, una imagen destacada y un título.
-    Espera un JSON en el cuerpo de la petición con 'image_url' (URL de la imagen destacada)
-    y 'title' (texto del título).
+    Ahora espera la imagen destacada como un archivo binario en 'request.files['image_file']'
+    y el título como un campo de formulario 'title_text' en 'request.form'.
     Guarda la imagen generada en Google Drive (opcional) y devuelve su URL pública de Cloudinary.
     """
-    # La validación de Google Drive aquí ya no es crítica si Cloudinary es la principal
-    # if drive is None:
-    #     return jsonify({"error": "El servicio de Google Drive no está disponible."}), 500
+    if 'image_file' not in request.files:
+        return jsonify({"error": "Falta el archivo de imagen en la petición (campo 'image_file')."}), 400
+    
+    image_file = request.files['image_file']
+    title_text = request.form.get('title_text') # Obtener el título del formulario
 
-    data = request.json
-    if not data:
-        return jsonify({"error": "El cuerpo de la petición debe ser JSON"}), 400
-
-    image_url = data.get('image_url')
-    title_text = data.get('title')
-
-    if not image_url or not title_text:
-        return jsonify({"error": "Faltan 'image_url' o 'title' en la petición"}), 400
+    if not title_text:
+        return jsonify({"error": "Falta el título en la petición (campo 'title_text')."}), 400
 
     try:
         # 1. Cargar la plantilla base
         base_image = Image.open(BASE_IMAGE_PATH).convert("RGBA")
         draw = ImageDraw.Draw(base_image)
 
-        # 2. Cargar y procesar la imagen destacada
-        response = requests.get(image_url)
-        featured_image = Image.open(io.BytesIO(response.content)).convert("RGBA")
+        # 2. Cargar y procesar la imagen destacada (directamente desde el archivo recibido)
+        featured_image = Image.open(image_file.stream).convert("RGBA") # Leer directamente del stream del archivo
 
         target_width_img = 1080
         target_height_img = 844
@@ -230,7 +225,7 @@ def generate_image():
             draw.text((x_final, y_offset), line, font=font, fill=text_color)
             y_offset += base_line_height + extra_spacing_per_line 
 
-        # --- Flujo de subida y devolución de URL ---
+        # --- Subir la imagen generada a Google Drive y Cloudinary ---
         img_byte_arr = io.BytesIO()
         image_filename = f"cn7_noticia_{os.urandom(4).hex()}.png" # Nombre único
 
@@ -242,29 +237,33 @@ def generate_image():
 
         # 1. Subir a Cloudinary (para Instagram y Link Directo)
         try:
-            cloudinary_response = cloudinary.uploader.upload(img_byte_arr, 
-                                                            folder="cn7_images", # Carpeta en Cloudinary (creará si no existe)
-                                                            public_id=image_filename.split('.')[0], # Usar el nombre sin extensión
+            # Crea una copia del stream para Cloudinary
+            cloudinary_upload_stream = io.BytesIO(img_byte_arr.getvalue())
+            cloudinary_upload_stream.seek(0)
+
+            cloudinary_response = cloudinary.uploader.upload(cloudinary_upload_stream, 
+                                                            folder="cn7_images", 
+                                                            public_id=image_filename.split('.')[0], 
                                                             resource_type="image")
             cloudinary_image_url = cloudinary_response['secure_url']
             print(f"Imagen subida a Cloudinary: {cloudinary_image_url}")
         except Exception as cl_e:
             print(f"Error al subir la imagen a Cloudinary: {cl_e}")
-            # Si Cloudinary falla, se seguirá intentando con GDrive o se devolverá un error.
 
         # 2. Subir a Google Drive (Opcional, para persistencia y Google Sheets)
-        # Solo si drive está inicializado y la carpeta es válida
         if drive is not None and GOOGLE_DRIVE_FOLDER_ID != 'TU_CARPETA_ID_EN_GOOGLE_DRIVE':
             try:
-                # Resetear el puntero para GDrive ya que se usó para Cloudinary
-                img_byte_arr.seek(0) 
+                # Crea una copia del stream para Google Drive
+                gdrive_upload_stream = io.BytesIO(img_byte_arr.getvalue())
+                gdrive_upload_stream.seek(0)
+
                 file_metadata = {
                     'title': image_filename,
                     'parents': [{'id': GOOGLE_DRIVE_FOLDER_ID}],
                     'mimeType': 'image/png'
                 }
                 file = drive.CreateFile(file_metadata)
-                file.content = img_byte_arr 
+                file.content = gdrive_upload_stream # Asignar el contenido binario desde el stream
                 file.Upload()
 
                 file.InsertPermission({
@@ -292,15 +291,12 @@ def generate_image():
         
         # --- Devolver la URL de la imagen (Prioridad: Cloudinary, luego Google Drive) ---
         if cloudinary_image_url:
-            # Si Cloudinary tuvo éxito, devolvemos su URL
             return jsonify({"image_url": cloudinary_image_url, 
-                            "gdrive_image_url": gdrive_image_url}), 200 # También devolvemos GDrive URL si existe
+                            "gdrive_image_url": gdrive_image_url}), 200
         elif gdrive_image_url:
-            # Si Cloudinary falló pero GDrive tuvo éxito, devolvemos GDrive URL
             return jsonify({"image_url": gdrive_image_url, 
                             "gdrive_image_url": gdrive_image_url}), 200
         else:
-            # Si ambos fallaron
             return jsonify({"error": "No se pudo generar la URL pública de la imagen en Cloudinary ni en Google Drive."}), 500
 
     except Exception as e:
