@@ -2,11 +2,11 @@
 from flask import Flask, request, send_file, jsonify
 from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
 import io
-import requests # Todavía necesario si la imagen destacada es una URL de WordPress para N8N para descargarla
+import requests
 import os
 import json
 import base64
-import time # Importar la librería time para añadir retrasos
+import time
 
 # Librerías para Cloudinary
 import cloudinary
@@ -15,18 +15,14 @@ import cloudinary.uploader
 
 app = Flask(__name__)
 
-# Define la ruta a tu plantilla base. Asegúrate de que este archivo esté en la misma carpeta que app.py
-BASE_IMAGE_PATH = 'plantilla_base.jpg'
+# Rutas base para plantillas y fuentes (ahora no son hardcodeadas, se construyen dinámicamente)
+TEMPLATES_FOLDER = os.path.join(os.path.dirname(__file__), 'templates') # Asume una carpeta 'templates'
+FONTS_FOLDER = os.path.join(os.path.dirname(__file__), 'fonts') # Asume una carpeta 'fonts'
 
-# Define la ruta a tu fuente. Asegúrate de que este archivo .ttf esté en la misma carpeta.
-FONT_PATH = "Roboto-Bold.ttf"
-
-# Factor de interlineado (ej. 0.2 = 20% de espacio adicional por línea)
+# Factor de interlineado
 LINE_SPACING_FACTOR = 0.3 
 
 # --- Configuración de Cloudinary ---
-# ¡IMPORTANTE! Configura estas variables de entorno en Railway para tu servicio.
-# CLOUD_NAME, API_KEY, API_SECRET se obtienen de tu Dashboard de Cloudinary.
 cloudinary.config( 
   cloud_name = os.environ.get('CLOUDINARY_CLOUD_NAME', 'tu_cloud_name'), 
   api_key = os.environ.get('CLOUDINARY_API_KEY', 'tu_api_key'), 
@@ -37,26 +33,39 @@ cloudinary.config(
 def generate_image():
     """
     Endpoint para generar una imagen combinando una plantilla, una imagen destacada y un título.
-    Ahora espera la imagen destacada como un archivo binario en 'request.files['image_file']'
-    y el título como un campo de formulario 'title_text' en 'request.form'.
+    Ahora espera la imagen destacada como 'image_file', el título como 'title_text',
+    el nombre de la plantilla base como 'template_name' y el nombre de la fuente como 'font_name'.
     Guarda la imagen generada en Cloudinary y devuelve su URL pública.
     """
     if 'image_file' not in request.files:
         return jsonify({"error": "Falta el archivo de imagen en la petición (campo 'image_file')."}), 400
     
     image_file = request.files['image_file']
-    title_text = request.form.get('title_text') # Obtener el título del formulario
+    title_text = request.form.get('title_text')
+    # --- NUEVOS PARÁMETROS: template_name y font_name ---
+    template_name = request.form.get('template_name')
+    font_name = request.form.get('font_name')
 
-    if not title_text:
-        return jsonify({"error": "Falta el título en la petición (campo 'title_text')."}), 400
+    if not title_text or not template_name or not font_name:
+        return jsonify({"error": "Faltan 'title_text', 'template_name' o 'font_name' en la petición."}), 400
+
+    # Construir las rutas completas de los archivos de plantilla y fuente
+    base_image_path_full = os.path.join(TEMPLATES_FOLDER, template_name)
+    font_path_full = os.path.join(FONTS_FOLDER, font_name)
+
+    # Validar que los archivos existen
+    if not os.path.exists(base_image_path_full):
+        return jsonify({"error": f"Plantilla base no encontrada: {template_name}"}), 404
+    if not os.path.exists(font_path_full):
+        return jsonify({"error": f"Fuente no encontrada: {font_name}"}), 404
 
     try:
-        # 1. Cargar la plantilla base
-        base_image = Image.open(BASE_IMAGE_PATH).convert("RGBA")
+        # 1. Cargar la plantilla base (ahora dinámica)
+        base_image = Image.open(base_image_path_full).convert("RGBA")
         draw = ImageDraw.Draw(base_image)
 
-        # 2. Cargar y procesar la imagen destacada (directamente desde el archivo recibido)
-        featured_image = Image.open(image_file.stream).convert("RGBA") # Leer directamente del stream del archivo
+        # 2. Cargar y procesar la imagen destacada
+        featured_image = Image.open(image_file.stream).convert("RGBA")
 
         target_width_img = 1080
         target_height_img = 844
@@ -70,7 +79,8 @@ def generate_image():
         scaled_featured_image = featured_image.resize((new_width_scaled, new_height_scaled), Image.Resampling.LANCZOS)
 
         if new_width_scaled < target_width_img:
-            background_fill = Image.open(BASE_IMAGE_PATH).convert("RGBA")
+            # Aquí es importante usar la base_image_path_full para el fondo desenfocado
+            background_fill = Image.open(base_image_path_full).convert("RGBA")
             background_fill = ImageOps.fit(background_fill, 
                                           (target_width_img, target_height_img), 
                                           method=Image.Resampling.LANCZOS, 
@@ -95,40 +105,49 @@ def generate_image():
 
 
         # 3. Añadir el título
-        text_area_width = 951
+        # --- CAMBIOS AQUÍ: Ajuste de posición y tamaño de la caja de texto ---
+        # Los valores de Placid serán variables en la request, pero aquí se usan los de la última configuración general.
+        # En la request de Make.com se deberán enviar los valores específicos para cada plantilla.
+        text_area_width = 951 
         text_area_height = 331
         text_area_x = 62 
         text_area_y = 873 
 
+        # Ajustes de posición y tamaño basados en la plantilla *actualmente cargada en app.py*
+        # Para CN7: text_area_y -= 47
+        # Para PL: text_area_y = 978 (posición Y directa)
+        # Necesitamos que estos sean configurables si las plantillas tienen áreas de texto diferentes.
+        # Por ahora, mantendré los últimos de CN7, pero lo ideal es pasarlos como parámetros también.
         text_area_y -= 47 
-        
         reduction_factor = 0.10 
         reduced_height_amount = int(text_area_height * reduction_factor)
         text_area_height -= reduced_height_amount
         text_area_y += reduced_height_amount 
 
+
         text_color = (255, 255, 255, 255) 
 
         try:
-            if os.path.exists(FONT_PATH):
-                font_size = 80
-                font = ImageFont.truetype(FONT_PATH, size=font_size)
+            # --- CAMBIO AQUÍ: Fuente cargada dinámicamente ---
+            if os.path.exists(font_path_full):
+                font_size = 65 # Tamaño inicial de la fuente, ajustar si es necesario para cada fuente
+                font = ImageFont.truetype(font_path_full, size=font_size)
             else:
-                print(f"Advertencia: Fuente '{FONT_PATH}' no encontrada. Usando fuente por defecto.")
+                print(f"Advertencia: Fuente '{font_name}' no encontrada en '{FONTS_FOLDER}'. Usando fuente por defecto.")
                 font = ImageFont.load_default()
         except IOError:
-            print("Advertencia: No se pudo cargar la fuente. Usando fuente por defecto.")
+            print(f"Advertencia: No se pudo cargar la fuente '{font_name}'. Usando fuente por defecto.")
             font = ImageFont.load_default()
 
         # --- Lógica para texto multi-línea y ajuste de fuente ---
         lines = []
         words = title_text.split() 
 
-        optimal_font_size = 100 
+        optimal_font_size = 80 # Empezar con un tamaño más grande para el texto, ajustar si es necesario
         max_lines = 4 
 
         while True:
-            temp_font = ImageFont.truetype(FONT_PATH, size=optimal_font_size) if os.path.exists(FONT_PATH) else ImageFont.load_default()
+            temp_font = ImageFont.truetype(font_path_full, size=optimal_font_size) if os.path.exists(font_path_full) else ImageFont.load_default()
             
             test_lines = []
             test_current_line_words = []
@@ -167,7 +186,7 @@ def generate_image():
                 font = temp_font
                 break
             
-            temp_font = ImageFont.truetype(FONT_PATH, size=optimal_font_size) if os.path.exists(FONT_PATH) else ImageFont.load_default()
+            temp_font = ImageFont.truetype(font_path_full, size=optimal_font_size) if os.path.exists(font_path_full) else ImageFont.load_default()
 
         y_offset = text_area_y 
 
@@ -192,24 +211,26 @@ def generate_image():
 
         # --- Subir la imagen generada a Cloudinary ---
         img_byte_arr = io.BytesIO()
-        image_filename = f"cn7_noticia_{os.urandom(4).hex()}.png" # Nombre único
-
-        base_image.save(img_byte_arr, format='PNG') # Guardar en PNG para calidad antes de subir
-        img_byte_arr.seek(0) # Mueve el puntero al inicio del stream para la subida
+        # Se genera un nombre único para la imagen
+        public_id_base = f"make_image_{os.urandom(4).hex()}" 
+        
+        base_image.save(img_byte_arr, format='PNG') 
+        img_byte_arr.seek(0) 
 
         cloudinary_image_url = None
         
         try:
-            # Crea una copia del stream para Cloudinary
-            # AÑADIR format="jpg" para la salida de Cloudinary
             cloudinary_upload_stream = io.BytesIO(img_byte_arr.getvalue())
             cloudinary_upload_stream.seek(0)
 
+            # Usar una carpeta de Cloudinary diferente según la plantilla para organización
+            cloudinary_folder = "cn7_images" if "cn7" in template_name else "pl_images" 
+            
             cloudinary_response = cloudinary.uploader.upload(cloudinary_upload_stream, 
-                                                            folder="cn7_images", 
-                                                            public_id=image_filename.split('.')[0], 
+                                                            folder=cloudinary_folder, 
+                                                            public_id=public_id_base, 
                                                             resource_type="image",
-                                                            format="jpg") # <--- CAMBIO AQUÍ: Fuerza la salida a JPG
+                                                            format="jpg") 
             cloudinary_image_url = cloudinary_response['secure_url']
             print(f"Imagen subida a Cloudinary: {cloudinary_image_url}")
         except Exception as cl_e:
